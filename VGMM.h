@@ -3,7 +3,9 @@
 
 typedef struct s_Params
 {
- /*seed*/
+  /*whether to polish after relevance det.*/
+  int bPolish;
+  /*seed*/
   unsigned long int lSeed;
   /*csv input file*/
   char *szInputFile;
@@ -11,10 +13,8 @@ typedef struct s_Params
   char *szPInputFile;
   /*output file stub*/
   char *szOutFileStub;
-  /*start cluster size*/
+  /*initial cluster size*/
   int nKStart;
-  /*end cluster size*/
-  int nKEnd;
   /*min contig length*/
   int nLMin;
 } t_Params;
@@ -109,15 +109,13 @@ typedef struct s_Cluster
 #define ALWAYS  1      /* required */
 
 /*Default parameters*/
-#define DEF_KSTART       2
-#define DEF_KEND         32
+#define DEF_KSTART       400
 #define MAX_ITER         500
-#define MIN_CHANGE_VBL   1.0e-5
+#define MIN_CHANGE_VBL   1.0e-6
 #define MIN_PI           0.1 /*Unormalised*/
 #define MIN_COVAR        0.001
 
 #define N_RTHREADS       10
-#define N_KTHREADS       1
 
 #define K_PRIME          100003
 #define R_PRIME          1009
@@ -130,6 +128,7 @@ typedef struct s_Cluster
 #define PINPUT_FILE      "-pin"
 #define SEED       	 "-l"
 #define VERBOSE          "-v"
+#define POLISH           "-p"
 #define KSTART           "-ks"
 #define KEND             "-ke"
 #define LMIN             "-lm"

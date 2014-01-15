@@ -51,8 +51,7 @@ int main(int argc, char* argv[])
   t_Data             tData;
   gsl_rng            *ptGSLRNG     = NULL;
   const gsl_rng_type *ptGSLRNGType = NULL;
-  int i = 0, j = 0, k = 0, r = 0, nK = 0, nNK = 0, nD = 0, nN = 0;
-  t_Cluster **aptBestK = NULL;
+  int i = 0, j = 0, k = 0, r = 0, nK = 0, nD = 0, nN = 0;
   char szOFile[MAX_LINE_LENGTH];
   FILE *ofp = NULL;
   double dBestVBL = -DBL_MAX;
@@ -60,6 +59,8 @@ int main(int argc, char* argv[])
   t_VBParams tVBParams;
   double dRD = 1.0;
   gsl_matrix *ptTMatrix = NULL;
+  t_Cluster  *ptBestCluster = NULL;
+  t_Cluster  *ptPolishCluster = NULL;
 
   /*initialise GSL RNG*/
   gsl_rng_env_setup();
@@ -68,8 +69,6 @@ int main(int argc, char* argv[])
   
   ptGSLRNGType = gsl_rng_default;
   ptGSLRNG     = gsl_rng_alloc(ptGSLRNGType);
-
-  gsl_set_error_handler_off();
   
   /*get command line params*/
   getCommandLineParams(&tParams, argc, argv);
@@ -81,16 +80,6 @@ int main(int argc, char* argv[])
 
   nD = tData.nD;
   nN = tData.nN;
-
-  nNK = tParams.nKEnd - tParams.nKStart;
-
-  aptBestK = (t_Cluster **) malloc(nNK*sizeof(t_Cluster*));
-  if(!aptBestK)
-    goto memoryError;
-
-  for(nK = tParams.nKStart; nK < tParams.nKEnd; nK++){
-    aptBestK[nK - tParams.nKStart] = (t_Cluster *) malloc(sizeof(t_Cluster));
-  }
 
   tVBParams.dBeta0 = 1.0e-3;
   tVBParams.dNu0 = (double) nD;
@@ -110,47 +99,70 @@ int main(int argc, char* argv[])
   }
 
   tVBParams.dLogWishartB = dLogWishartB(tVBParams.ptInvW0, nD, tVBParams.dNu0, TRUE);
+  
+  ptBestCluster = (t_Cluster *) malloc(sizeof(t_Cluster));
 
-  for(nK = tParams.nKStart; nK < tParams.nKEnd; nK += N_KTHREADS){
-    t_Cluster atDCluster[N_KTHREADS];
-    pthread_t atKThreads[N_KTHREADS];    
-    int       kret[N_KTHREADS];
-    int       nKO = nK - tParams.nKStart;
-    int       nKR = tParams.nKEnd - nK;
-    int       nNKThreads =  nKR < N_KTHREADS ? nKR : N_KTHREADS;
+  ptBestCluster->nN = nN;
+  ptBestCluster->nK = tParams.nKStart;
+  ptBestCluster->nD = nD;
+  ptBestCluster->ptData = &tData;
+  ptBestCluster->ptVBParams = &tVBParams;
+  ptBestCluster->lSeed = tParams.lSeed;
 
-    for(k = 0; k < nNKThreads; k++){
-      aptBestK[nKO + k]->nN = nN;
-      aptBestK[nKO + k]->nK = nK + k;
-      aptBestK[nKO + k]->nD = nD;
-      aptBestK[nKO + k]->ptData = &tData;
-      aptBestK[nKO + k]->ptVBParams = &tVBParams;
-      aptBestK[nKO + k]->lSeed = tParams.lSeed + k*K_PRIME;
+  runRThreads((void *) &ptBestCluster);
 
-      kret[k] = pthread_create(&atKThreads[k], NULL, runRThreads, (void*) &aptBestK[nKO + k]);
+  compressCluster(ptBestCluster);
+
+  if(tParams.bPolish == TRUE){
+    ptPolishCluster = (t_Cluster *) malloc(sizeof(t_Cluster));
+
+    ptPolishCluster->nN = nN;
+    ptPolishCluster->nK = ptBestCluster->nK;
+    ptPolishCluster->nD = nD;
+    ptPolishCluster->ptData = &tData;
+    ptPolishCluster->ptVBParams = &tVBParams;
+    ptPolishCluster->lSeed = tParams.lSeed;
+
+    runRThreads((void *) &ptPolishCluster);
+
+    compressCluster(ptPolishCluster);
+    if(ptPolishCluster->dVBL > ptBestCluster->dVBL){
+      destroyCluster(ptBestCluster);
+      free(ptBestCluster);
+
+      ptBestCluster = ptPolishCluster;
     }
-
-    for(k = 0; k < nNKThreads; k++){
-      pthread_join(atKThreads[k], NULL);
+    else{
+      destroyCluster(ptPolishCluster);
+      free(ptPolishCluster);
     }
-    
   }
 
-
   mkdir(tParams.szOutFileStub,S_IRWXU);
+
+  calcCovarMatrices(ptBestCluster,&tData);
+
+  sprintf(szOFile,"%s/%s_clustering_gt%d.csv",tParams.szOutFileStub,tParams.szOutFileStub,tParams.nLMin);
+  writeClusters(szOFile,ptBestCluster,&tData);
+
+  sprintf(szOFile,"%s/%s_pca_means_gt%d.csv",tParams.szOutFileStub,tParams.szOutFileStub,tParams.nLMin);
+  writeMeans(szOFile,ptBestCluster);
+
+  sprintf(szOFile,"%s/%s_pca_tmeans_gt%d.csv",tParams.szOutFileStub,tParams.szOutFileStub,tParams.nLMin);
+  writeTMeans(szOFile,ptBestCluster,&tData);
+
+  for(k = 0; k < ptBestCluster->nK; k++){
+    sprintf(szOFile,"%s/%s_pca_variances_gt%d_dim%d.csv",tParams.szOutFileStub,tParams.szOutFileStub,tParams.nLMin,k);
+    
+    writeSquareMatrix(szOFile, ptBestCluster->aptSigma[k], nD);
+  }
 
   sprintf(szOFile,"%s/%s_bic.csv",tParams.szOutFileStub,tParams.szOutFileStub,tParams.szOutFileStub);
 
   ofp = fopen(szOFile,"w");
-  if(ofp){
-    for(nK = tParams.nKStart; nK < tParams.nKEnd; nK++){
-      double dVBL = aptBestK[nK - tParams.nKStart]->dVBL;
-      fprintf(ofp,"%d,%f\n",nK,dVBL);
-      if(dVBL > dBestVBL){
-	dBestVBL = dVBL;
-	nKBest = nK;
-      }
-    }
+  if(ofp){    
+    fprintf(ofp,"%d,%f\n",ptBestCluster->nK,ptBestCluster->dVBL);
+
     fclose(ofp);
   }
   else{
@@ -158,35 +170,14 @@ int main(int argc, char* argv[])
     fflush(stderr);
   }
 
-  compressCluster(aptBestK[nKBest - tParams.nKStart]);
-
-  calcCovarMatrices(aptBestK[nKBest - tParams.nKStart], &tData);
-
-  sprintf(szOFile,"%s/%s_clustering_gt%d.csv",tParams.szOutFileStub,tParams.szOutFileStub,tParams.nLMin);
-  writeClusters(szOFile,aptBestK[nKBest - tParams.nKStart],&tData);
-
-  sprintf(szOFile,"%s/%s_pca_means_gt%d.csv",tParams.szOutFileStub,tParams.szOutFileStub,tParams.nLMin);
-  writeMeans(szOFile,aptBestK[nKBest - tParams.nKStart]);
-
-  sprintf(szOFile,"%s/%s_pca_tmeans_gt%d.csv",tParams.szOutFileStub,tParams.szOutFileStub,tParams.nLMin);
-  writeTMeans(szOFile,aptBestK[nKBest - tParams.nKStart], &tData);
-
-  for(k = 0; k < nKBest; k++){
-    sprintf(szOFile,"%s/%s_pca_variances_gt%d_dim%d.csv",tParams.szOutFileStub,tParams.szOutFileStub,tParams.nLMin,k);
-    
-    writeSquareMatrix(szOFile, aptBestK[nKBest - tParams.nKStart]->aptSigma[k], nD);
-  }
-
   /*free up memory in data object*/
   destroyData(&tData);
 
   /*free up best BIC clusters*/
-  for(nK = tParams.nKStart; nK < tParams.nKEnd; nK++){
-    destroyCluster(aptBestK[nK - tParams.nKStart]);
-    free(aptBestK[nK - tParams.nKStart]);
-  }
 
-  free(aptBestK);
+  destroyCluster(ptBestCluster);
+  free(ptBestCluster);
+
   exit(EXIT_SUCCESS);
 
  memoryError:
@@ -254,6 +245,14 @@ void getCommandLineParams(t_Params *ptParams,int argc,char *argv[])
     bVerbose=TRUE;
   }
 
+  szTemp = extractParameter(argc,argv,POLISH,OPTION);
+  if(szTemp != NULL){
+    ptParams->bPolish = TRUE;
+  }
+  else{
+    ptParams->bPolish = FALSE;
+  }
+
   szTemp = extractParameter(argc,argv,SEED,OPTION);
   if(szTemp != NULL){
     ptParams->lSeed = (unsigned long int) strtol(szTemp,&cError,10);
@@ -287,19 +286,7 @@ void getCommandLineParams(t_Params *ptParams,int argc,char *argv[])
     ptParams->nKStart = DEF_KSTART;
   }
 
-  szTemp = extractParameter(argc,argv,KEND,OPTION);
-  if(szTemp != NULL){
-    ptParams->nKEnd = strtol(szTemp,&cError,10);
-    if(*cError != '\0'){
-      goto error;
-    }
-  }
-  else{
-    ptParams->nKEnd = DEF_KEND;
-  }
-
   return;
-
  error:
   writeUsage(stdout);
   exit(EXIT_FAILURE);
